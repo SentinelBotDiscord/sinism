@@ -1,0 +1,162 @@
+import discord
+from discord.ext import commands
+from utils import storage
+
+
+def get_settings():
+    return storage.load("guild_settings", {})
+
+
+def get_guild(data, guild_id):
+    gid = str(guild_id)
+    if gid not in data:
+        data[gid] = {}
+    return data[gid]
+
+
+class LoggingCog(commands.Cog):
+    """Full server activity logging: deletes, edits, role/channel changes, joins/leaves, bans."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def get_log_channel(self, guild):
+        data = get_settings()
+        g = get_guild(data, guild.id)
+        cid = g.get("event_log_channel")
+        return guild.get_channel(int(cid)) if cid else None
+
+    async def send_log(self, guild, embed):
+        channel = await self.get_log_channel(guild)
+        if channel:
+            embed.timestamp = discord.utils.utcnow()
+            try:
+                await channel.send(embed=embed)
+            except discord.Forbidden:
+                pass
+
+    # ---------- Messages ----------
+
+    @commands.Cog.listener()
+    async def on_message_delete(self, message: discord.Message):
+        if not message.guild or message.author.bot:
+            return
+        embed = discord.Embed(title="🗑️ Message Deleted", color=discord.Color.red())
+        embed.add_field(name="Author", value=f"{message.author} ({message.author.id})", inline=False)
+        embed.add_field(name="Channel", value=message.channel.mention, inline=False)
+        content = message.content if message.content else "*[no text content / embed-only]*"
+        embed.add_field(name="Content", value=content[:1000], inline=False)
+        await self.send_log(message.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if not before.guild or before.author.bot or before.content == after.content:
+            return
+        embed = discord.Embed(title="✏️ Message Edited", color=discord.Color.orange())
+        embed.add_field(name="Author", value=f"{before.author} ({before.author.id})", inline=False)
+        embed.add_field(name="Channel", value=before.channel.mention, inline=False)
+        embed.add_field(name="Before", value=(before.content or "*empty*")[:500], inline=False)
+        embed.add_field(name="After", value=(after.content or "*empty*")[:500], inline=False)
+        await self.send_log(before.guild, embed)
+
+    # ---------- Roles ----------
+
+    @commands.Cog.listener()
+    async def on_guild_role_create(self, role: discord.Role):
+        embed = discord.Embed(
+            title="➕ Role Created",
+            description=f"**Role:** {role.mention} (`{role.name}`)",
+            color=discord.Color.green(),
+        )
+        await self.send_log(role.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role):
+        embed = discord.Embed(
+            title="➖ Role Deleted",
+            description=f"**Role:** `{role.name}` (ID: {role.id})",
+            color=discord.Color.red(),
+        )
+        await self.send_log(role.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        changes = []
+        if before.name != after.name:
+            changes.append(f"Name: `{before.name}` → `{after.name}`")
+        if before.color != after.color:
+            changes.append(f"Color: `{before.color}` → `{after.color}`")
+        if before.permissions != after.permissions:
+            changes.append("Permissions changed")
+        if not changes:
+            return
+        embed = discord.Embed(
+            title="🔧 Role Updated",
+            description=f"**Role:** {after.mention}\n" + "\n".join(changes),
+            color=discord.Color.gold(),
+        )
+        await self.send_log(after.guild, embed)
+
+    # ---------- Channels ----------
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel):
+        embed = discord.Embed(
+            title="➕ Channel Created",
+            description=f"**Channel:** {getattr(channel, 'mention', channel.name)} (`{channel.name}`)",
+            color=discord.Color.green(),
+        )
+        await self.send_log(channel.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        embed = discord.Embed(
+            title="➖ Channel Deleted",
+            description=f"**Channel:** `{channel.name}` (ID: {channel.id})",
+            color=discord.Color.red(),
+        )
+        await self.send_log(channel.guild, embed)
+
+    # ---------- Members ----------
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        embed = discord.Embed(
+            title="📥 Member Joined",
+            description=f"**User:** {member} ({member.id})\n**Account created:** {discord.utils.format_dt(member.created_at)}",
+            color=discord.Color.green(),
+        )
+        await self.send_log(member.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        embed = discord.Embed(
+            title="📤 Member Left",
+            description=f"**User:** {member} ({member.id})",
+            color=discord.Color.dark_grey(),
+        )
+        await self.send_log(member.guild, embed)
+
+    # ---------- Bans ----------
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user):
+        embed = discord.Embed(
+            title="🔨 Member Banned",
+            description=f"**User:** {user} ({user.id})",
+            color=discord.Color.red(),
+        )
+        await self.send_log(guild, embed)
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild: discord.Guild, user):
+        embed = discord.Embed(
+            title="✅ Member Unbanned",
+            description=f"**User:** {user} ({user.id})",
+            color=discord.Color.green(),
+        )
+        await self.send_log(guild, embed)
+
+
+async def setup(bot):
+    await bot.add_cog(LoggingCog(bot))
